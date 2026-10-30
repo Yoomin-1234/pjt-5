@@ -1,4 +1,4 @@
-# analysis/pipeline/llm.py
+# stocks/pipeline/llm.py
 import json
 from openai import OpenAI
 from django.conf import settings

@@ -1,4 +1,4 @@
-# analysis/pipeline/augment.py
+# stocks/pipeline/augment.py
 from .llm import call_gms_llm_api
 
 def augment_comments(cleaned_comments):

@@ -1,4 +1,4 @@
-# analysis/pipeline/preprocess.py
+# stocks/pipeline/preprocess.py
 import re
 from .llm import filter_bad_comments_with_llm # 압축파일의 llm.py 활용
 
