@@ -1,100 +1,191 @@
-# stocks/pipeline/llm.py
 import json
 from openai import OpenAI
 from django.conf import settings
 
+
 def _get_llm_client():
-    """GMS API 클라이언트를 초기화하여 반환하는 내부 함수"""
-    api_key = getattr(settings, 'GMS_API_KEY', '')
-    if not api_key:
-        print("[Warning] GMS_API_KEY가 설정되어 있지 않습니다.")
-        return None
+
+    if not settings.GMS_API_KEY:
+        raise ValueError(
+            "GMS API 키가 설정되지 않았습니다."
+        )
+
     return OpenAI(
-        api_key=api_key,
-        base_url='https://gms.ssafy.io/gmsapi/api.openai.com/v1',
+        api_key=settings.GMS_API_KEY,
+        base_url=settings.GMS_BASE_URL,
+        timeout=30.0,
+        max_retries=1,
     )
 
 
-def call_gms_llm_api(prompt):
-    """(F606) 단순 텍스트 증강용 LLM 호출 함수"""
-    client = _get_llm_client()
-    if not client:
-        return prompt  # 키가 없으면 원본 그대로 반환
+def _request_llm(messages, json_mode=False):
 
-    try:
-        response = client.chat.completions.create(
-            model='gpt-5-nano',
-            messages=[
-                {'role': 'system', 'content': '당신은 주식 커뮤니티 댓글의 맥락을 살려 문장을 자연스럽게 확장해주는 주식 전문가입니다.'},
-                {'role': 'user', 'content': prompt},
-            ],
-            timeout=10,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"LLM Augment Error: {e}")
-        return prompt
+    client = _get_llm_client()
+
+    params = {
+        "model": settings.GMS_MODEL,
+        "messages": messages,
+    }
+
+    if json_mode:
+        params["response_format"] = {
+            "type": "json_object"
+        }
+
+    response = client.chat.completions.create(
+        **params
+    )
+
+    content = response.choices[0].message.content
+
+    if not content or not content.strip():
+        raise ValueError("LLM 응답이 비어 있습니다.")
+
+    return content.strip()
 
 
 def filter_bad_comments_with_llm(comments):
-    """
-    (F605) 부적절한 댓글 필터링: 
-    입력된 댓글 리스트 중 욕설, 비방 등 부적절한 댓글의 인덱스를 JSON 배열로 받아 제외함
-    """
-    client = _get_llm_client()
-    if not client or not comments:
-        return comments
+ 
 
-    # 댓글 리스트를 인덱스와 함께 프롬프트에 전달
-    comments_text = "\n".join([f"[{i}] {c}" for i, c in enumerate(comments)])
-    prompt = (
-        f"다음 댓글 목록에서 부적절한 댓글(욕설, 혐오, 비방, 선정성, 과도한 비난 등)의 번호만 JSON 배열로 알려줘.\n"
-        f"형식: {{\"bad_indices\": [0, 2]}}\n\n"
-        f"{comments_text}"
+    if not comments:
+        return []
+
+    numbered_comments = "\n".join(
+        f"[{idx}] {comment}"
+        for idx, comment in enumerate(comments)
     )
 
-    try:
-        response = client.chat.completions.create(
-            model='gpt-5-nano',
-            messages=[
-                {'role': 'system', 'content': '반드시 유효한 JSON 객체만 출력하는 텍스트 필터링 봇입니다.'},
-                {'role': 'user', 'content': prompt},
-            ],
-            response_format={'type': 'json_object'},
-            timeout=10,
+    prompt = f"""
+다음은 주식 커뮤니티 댓글입니다.
+
+욕설, 혐오, 심한 비방, 선정성,
+과도한 인신공격 등이 포함된
+부적절한 댓글의 인덱스를 골라주세요.
+
+부정적인 주식 전망이나 정상적인 비판은
+부적절한 댓글로 판단하지 마세요.
+
+반드시 다음 JSON 객체 형식으로 답하세요.
+
+{{"bad_indices": [0, 2]}}
+
+댓글:
+{numbered_comments}
+"""
+
+    result = _request_llm(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "댓글의 적절성을 판단하는 필터입니다. "
+                    "JSON 객체만 반환하세요."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        json_mode=True,
+    )
+
+    data = json.loads(result)
+
+    bad_indices = data.get("bad_indices")
+
+    if not isinstance(bad_indices, list):
+        raise ValueError(
+            "LLM의 bad_indices 형식이 올바르지 않습니다."
         )
-        parsed = json.loads(response.choices[0].message.content)
-        bad_indices = parsed.get("bad_indices", [])
-        
-        # 부적절한 인덱스를 제외한 깨끗한 댓글만 필터링
-        return [c for i, c in enumerate(comments) if i not in bad_indices]
-    except Exception as e:
-        print(f"LLM Filter Error: {e}")
-        return comments
+
+    if any(
+        type(idx) is not int
+        or not 0 <= idx < len(comments)
+        for idx in bad_indices
+    ):
+        raise ValueError(
+            "LLM이 잘못된 댓글 인덱스를 반환했습니다."
+        )
+
+    excluded = set(bad_indices)
+
+    return [
+        comment
+        for idx, comment in enumerate(comments)
+        if idx not in excluded
+    ]
+
+
+def call_gms_llm_api(comment):
+
+
+    prompt = f"""
+다음 주식 커뮤니티 댓글을 자연스럽게 확장하세요.
+
+규칙:
+1. 원래 댓글의 의미와 감정을 유지하세요.
+2. 없는 사실이나 수치를 만들어내지 마세요.
+3. 투자 조언을 추가하지 마세요.
+4. 한 문장 또는 두 문장으로 작성하세요.
+5. 설명 없이 확장된 문장만 출력하세요.
+
+원본 댓글:
+{comment}
+"""
+
+    return _request_llm(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "원문 의미를 보존하며 "
+                    "문장을 자연스럽게 확장하는 도우미입니다."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ]
+    )
 
 
 def summarize_comments(comments):
-    """(F610 심화) 전체 댓글을 기반으로 요약 텍스트 생성"""
-    client = _get_llm_client()
-    if not client or not comments:
+
+    if not comments:
         return ""
 
-    comments_text = "\n".join(comments)
-    prompt = (
-        f"다음은 특정 종목에 대한 주식 커뮤니티 댓글 모음입니다.\n\n{comments_text}\n\n"
-        f"이 댓글들의 주요 반응과 분위기를 2~3문장으로 간결하게 요약해줘."
+    comments_text = "\n".join(
+        f"- {comment}" for comment in comments
     )
 
-    try:
-        response = client.chat.completions.create(
-            model='gpt-5-nano',
-            messages=[
-                {'role': 'system', 'content': '주식 시장의 투자자 반응을 객관적으로 분석하고 요약하는 전문가입니다.'},
-                {'role': 'user', 'content': prompt},
-            ],
-            timeout=10,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"LLM Summarize Error: {e}")
-        return "댓글 요약 생성에 실패했습니다."
+    prompt = f"""
+다음 주식 커뮤니티 댓글의 주요 반응을
+2~3문장으로 객관적으로 요약하세요.
+
+규칙:
+1. 긍정적/부정적 반응을 균형 있게 설명하세요.
+2. 댓글에서 확인되지 않은 사실은 추가하지 마세요.
+3. 투자 추천이나 매매 지시는 하지 마세요.
+4. 핵심 반응만 간결하게 작성하세요.
+
+댓글 목록:
+{comments_text}
+"""
+
+    return _request_llm(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "주식 커뮤니티 여론을 "
+                    "중립적으로 요약하는 도우미입니다."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ]
+    )
