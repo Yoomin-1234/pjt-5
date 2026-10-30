@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -125,4 +126,9 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-GMS_API_KEY = os.getenv('GMS_API_KEY', '')
+GMS_API_KEY = os.getenv("GMS_KEY", "")
+GMS_BASE_URL = os.getenv(
+    "GMS_BASE_URL",
+    "https://gms.ssafy.io/gmsapi/api.openai.com/v1"
+)
+GMS_MODEL = os.getenv("MODEL", "gpt-5-nano")
